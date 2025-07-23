@@ -1,0 +1,70 @@
+services:
+  ntfy:
+    image: binwiederhier/ntfy
+    container_name: claude-control-ntfy
+    command: serve
+    environment:
+      - TZ=EST
+    volumes:
+      - /var/cache/ntfy:/var/cache/ntfy
+      - /etc/ntfy:/etc/ntfy
+    ports:
+      - "${NTFY_HOST_PORT:-80}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -Eo '\"healthy\"\\s*:\\s*true' || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15
+    container_name: claude-control-db
+    environment:
+      POSTGRES_DB: claude_control
+      POSTGRES_USER: claude_user
+      POSTGRES_PASSWORD: claude_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claude_user -d claude_control"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  claude-control:
+    build: .
+    container_name: claude-control-server
+    env_file:
+      - .env
+    environment:
+      - SERVER_PORT=${SERVER_PORT:-8080}
+      - DATABASE_URL=postgresql://claude_user:claude_password@postgres:5432/claude_control?sslmode=disable
+      - NTFY_SERVER_URL=http://ntfy:80
+      - NTFY_TOPIC=${NTFY_TOPIC:-claude-notifications}
+      - TMUX_SESSION_NAME=${TMUX_SESSION_NAME:-claude-code-session}
+      - WEB_DOMAIN=${WEB_DOMAIN:-localhost:8080}
+    ports:
+      - "${WEB_HOST_PORT:-8080}:8080"
+    volumes:
+      - /var/run/tmux:/var/run/tmux
+      - ./templates:/app/templates
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ntfy:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
