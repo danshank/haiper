@@ -26,33 +26,22 @@ func NewTaskRepository(db *sql.DB) *TaskRepository {
 // Create stores a new task
 func (r *TaskRepository) Create(ctx context.Context, task *domain.Task) error {
 	query := `
-		INSERT INTO tasks (id, hook_type, task_data, status, created_at, updated_at, action_taken, response_data)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+		INSERT INTO tasks (id, hook_type, task_data, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`
 
-	var actionTaken *string
-	if task.ActionTaken != nil {
-		action := task.ActionTaken.String()
-		actionTaken = &action
-	}
-
-	var responseDataJSON []byte
-	if task.ResponseData != nil {
-		var err error
-		responseDataJSON, err = json.Marshal(task.ResponseData)
-		if err != nil {
-			return fmt.Errorf("failed to marshal response data: %w", err)
-		}
+	// Convert task data to string for PostgreSQL
+	taskDataStr := string(task.TaskData)
+	if taskDataStr == "" || taskDataStr == "null" {
+		taskDataStr = "{}"
 	}
 
 	_, err := r.db.ExecContext(ctx, query,
 		task.ID,
 		task.HookType.String(),
-		string(task.TaskData), // Convert json.RawMessage to string
+		taskDataStr,
 		task.Status.String(),
 		task.CreatedAt,
 		task.UpdatedAt,
-		actionTaken,
-		responseDataJSON,
 	)
 
 	if err != nil {

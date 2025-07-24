@@ -20,9 +20,9 @@ And basically sending a HDP request to that web server that says, hey , this is 
 
 That ID is then I can then use that ID to create a webpage and go.
 
-It will contain the text, that notification as well as follow-up actions that I can take if I decide to give feedback or take a specific action as follow-up, then the go server will send via TMux different key presses back to clod code and clod code will continue to run.
+It will contain the text, that notification as well as follow-up actions that I can take if I decide to give feedback or take a specific action as follow-up, then the go server will return a JSON response directly to Claude Code indicating whether to continue, stop, or take other actions.
 
-So it's essentially an integrated webpage on my local network that I can use to go back and forth with cloud code and control it via my phone.
+So it's essentially an integrated webpage on my local network that I can use to go back and forth with Claude Code and control it via my phone using Claude Code's native JSON hook response system.
 
 ## System Architecture
 
@@ -36,8 +36,8 @@ graph TB
     end
     
     subgraph "Workstation"
-        Claude["🤖 Claude Code<br/>(TMux Session)"]
-        GoServer["⚙️ Go Server<br/>• Webhook Handlers<br/>• Web Interface<br/>• TMux Control<br/>• NTFY Integration"]
+        Claude["🤖 Claude Code<br/>(JSON Hook Responses)"]
+        GoServer["⚙️ Go Server<br/>• Webhook Handlers<br/>• Web Interface<br/>• JSON Response Builder<br/>• NTFY Integration"]
         DB[("🗄️ PostgreSQL<br/>• Task Data<br/>• History")]
         NTFY["📢 NTFY Server<br/>• Push Notifications"]
     end
@@ -52,15 +52,16 @@ graph TB
     Tailscale -.->|Secure Tunnel| GoServer
     
     %% Claude Code Flow
-    Claude -->|Webhook Triggers| GoServer
+    Claude -->|Webhook Request| GoServer
     GoServer -->|Store Task| DB
     GoServer -->|Send Notification| NTFY
+    GoServer -->|JSON Response| Claude
     NTFY -->|Push Notification| Phone
     
     %% User Interaction Flow
     Browser -->|HTTP Request| GoServer
     GoServer -->|Retrieve Task| DB
-    GoServer -->|TMux Commands| Claude
+    GoServer -->|Update Task| DB
     
     %% Docker Services
     subgraph "Docker Containers"
@@ -106,8 +107,9 @@ sequenceDiagram
     Note over B,C: 3. Action Response
     B->>G: POST /task/{task-id}/action
     G->>D: Update task status
-    G->>C: tmux send-keys (action)
-    C->>G: Continue execution
+    Note over G,C: Future webhook requests receive user decision
+    C->>G: Next webhook (if blocking)
+    G->>C: JSON response with user decision
 ```
 
 ## Data Flow
@@ -134,7 +136,7 @@ Your Phone → Web Browser → Go Server → PostgreSQL (retrieve task)
 ### 4. Action Response
 
 ```
-Your Phone → Web Browser → Go Server → TMux → Claude Code
+Your Phone → Web Browser → Go Server → JSON Response → Claude Code
 ```
 
 ## Implementation Plan
@@ -152,9 +154,10 @@ Your Phone → Web Browser → Go Server → TMux → Claude Code
 - Individual task view with action buttons
 - Real-time updates via WebSocket (optional)
 
-#### TMux Integration
-- Control Claude Code session via `tmux send-keys`
-- Standardized session name: `claude-code-session`
+#### JSON Hook Response System
+- Return Claude Code compliant JSON responses with `continue`, `stopReason`, and `suppressOutput` fields
+- Support for blocking and non-blocking webhook responses
+- Real-time decision management via Go channels
 
 ### 2. Database Schema
 
@@ -189,7 +192,6 @@ SERVER_PORT=8080
 DATABASE_URL=postgresql://user:password@localhost:5432/claude_control
 NTFY_SERVER_URL=http://localhost:80
 NTFY_TOPIC=claude-notifications
-TMUX_SESSION_NAME=claude-code-session
 WEB_DOMAIN=your-tailscale-ip:8080
 ```
 
@@ -224,7 +226,7 @@ Create or edit `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST http://localhost:10291/webhook/pre-tool-use -H 'Content-Type: application/json' -d '{\"hook_type\": \"PreToolUse\", \"session_id\": \"'\"$session_id\"'\", \"tool\": \"'\"$tool_name\"'\", \"cwd\": \"'\"$cwd\"'\", \"data\": '\"$tool_input\"'}' || true"
+            "command": "curl -s -X POST http://localhost:10291/webhook/pre-tool-use -H 'Content-Type: application/json' -d '{\"hook_type\": \"PreToolUse\", \"session_id\": \"'\"$session_id\"'\", \"tool\": \"'\"$tool_name\"'\", \"cwd\": \"'\"$cwd\"'\", \"data\": '\"$tool_input\"'}' --max-time 300"
           }
         ]
       }
@@ -235,7 +237,7 @@ Create or edit `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command", 
-            "command": "curl -s -X POST http://localhost:10291/webhook/post-tool-use -H 'Content-Type: application/json' -d '{\"hook_type\": \"PostToolUse\", \"session_id\": \"'\"$session_id\"'\", \"tool\": \"'\"$tool_name\"'\", \"cwd\": \"'\"$cwd\"'\", \"success\": '\"$success\"', \"data\": '\"$tool_output\"'}' || true"
+            "command": "curl -s -X POST http://localhost:10291/webhook/post-tool-use -H 'Content-Type: application/json' -d '{\"hook_type\": \"PostToolUse\", \"session_id\": \"'\"$session_id\"'\", \"tool\": \"'\"$tool_name\"'\", \"cwd\": \"'\"$cwd\"'\", \"success\": '\"$success\"', \"data\": '\"$tool_output\"'}' --max-time 30"
           }
         ]
       }
@@ -246,7 +248,7 @@ Create or edit `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST http://localhost:10291/webhook/notification -H 'Content-Type: application/json' -d '{\"hook_type\": \"Notification\", \"session_id\": \"'\"$session_id\"'\", \"cwd\": \"'\"$cwd\"'\", \"message\": \"Claude needs your attention\"}' || true"
+            "command": "curl -s -X POST http://localhost:10291/webhook/notification -H 'Content-Type: application/json' -d '{\"hook_type\": \"Notification\", \"session_id\": \"'\"$session_id\"'\", \"cwd\": \"'\"$cwd\"'\", \"message\": \"Claude needs your attention\"}' --max-time 300"
           }
         ]
       }
@@ -257,7 +259,7 @@ Create or edit `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST http://localhost:10291/webhook/user-prompt-submit -H 'Content-Type: application/json' -d '{\"hook_type\": \"UserPromptSubmit\", \"session_id\": \"'\"$session_id\"'\", \"cwd\": \"'\"$cwd\"'\", \"prompt\": '\"$user_input\"'}' || true"
+            "command": "curl -s -X POST http://localhost:10291/webhook/user-prompt-submit -H 'Content-Type: application/json' -d '{\"hook_type\": \"UserPromptSubmit\", \"session_id\": \"'\"$session_id\"'\", \"cwd\": \"'\"$cwd\"'\", \"prompt\": '\"$user_input\"'}' --max-time 300"
           }
         ]
       }
@@ -268,7 +270,7 @@ Create or edit `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST http://localhost:10291/webhook/stop -H 'Content-Type: application/json' -d '{\"hook_type\": \"Stop\", \"session_id\": \"'\"$session_id\"'\", \"cwd\": \"'\"$cwd\"'\"}' || true"
+            "command": "curl -s -X POST http://localhost:10291/webhook/stop -H 'Content-Type: application/json' -d '{\"hook_type\": \"Stop\", \"session_id\": \"'\"$session_id\"'\", \"cwd\": \"'\"$cwd\"'\"}' --max-time 30"
           }
         ]
       }
@@ -279,7 +281,7 @@ Create or edit `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST http://localhost:10291/webhook/subagent-stop -H 'Content-Type: application/json' -d '{\"hook_type\": \"SubagentStop\", \"session_id\": \"'\"$session_id\"'\", \"cwd\": \"'\"$cwd\"'\"}' || true"
+            "command": "curl -s -X POST http://localhost:10291/webhook/subagent-stop -H 'Content-Type: application/json' -d '{\"hook_type\": \"SubagentStop\", \"session_id\": \"'\"$session_id\"'\", \"cwd\": \"'\"$cwd\"'\"}' --max-time 30"
           }
         ]
       }
@@ -290,7 +292,7 @@ Create or edit `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s -X POST http://localhost:10291/webhook/pre-compact -H 'Content-Type: application/json' -d '{\"hook_type\": \"PreCompact\", \"session_id\": \"'\"$session_id\"'\", \"cwd\": \"'\"$cwd\"'\", \"trigger\": \"'\"$compact_trigger\"'\"}' || true"
+            "command": "curl -s -X POST http://localhost:10291/webhook/pre-compact -H 'Content-Type: application/json' -d '{\"hook_type\": \"PreCompact\", \"session_id\": \"'\"$session_id\"'\", \"cwd\": \"'\"$cwd\"'\", \"trigger\": \"'\"$compact_trigger\"'\"}' --max-time 30"
           }
         ]
       }
@@ -338,72 +340,128 @@ To only hook specific tools, use matchers:
 
 ### 5. Docker Compose Setup
 
-```yaml
-version: '3.8'
+#### Quick Start
 
-services:
-  ntfy:
-    image: binwiederhier/ntfy
-    container_name: ntfy
-    command: serve
-    environment:
-      - TZ=EST
-    volumes:
-      - /var/cache/ntfy:/var/cache/ntfy
-      - /etc/ntfy:/etc/ntfy
-    ports:
-      - "80:80"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -Eo '\"healthy\"\\s*:\\s*true' || exit 1"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    restart: unless-stopped
+```bash
+# Start all services
+docker compose up -d
 
-  postgres:
-    image: postgres:15
-    container_name: claude-control-db
-    environment:
-      POSTGRES_DB: claude_control
-      POSTGRES_USER: claude_user
-      POSTGRES_PASSWORD: claude_password
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
+# Check status
+docker compose ps
 
-  go-server:
-    build: .
-    container_name: claude-control-server
-    environment:
-      - SERVER_PORT=8080
-      - DATABASE_URL=postgresql://claude_user:claude_password@postgres:5432/claude_control
-      - NTFY_SERVER_URL=http://ntfy:80
-      - NTFY_TOPIC=claude-notifications
-      - TMUX_SESSION_NAME=claude-code-session
-      - WEB_DOMAIN=${WEB_DOMAIN:-localhost:8080}
-    ports:
-      - "8080:8080"
-    volumes:
-      - /var/run/tmux:/var/run/tmux  # Access to TMux socket
-    depends_on:
-      - postgres
-      - ntfy
-    restart: unless-stopped
+# View logs
+docker compose logs -f
 
-volumes:
-  postgres_data:
+# Stop all services
+docker compose down
 ```
+
+#### Individual Container Management
+
+```bash
+# Start specific services
+docker compose up -d postgres ntfy  # Start only database and notifications
+docker compose up -d claude-control # Start only the main server
+
+# Stop specific services
+docker compose stop claude-control  # Stop only the main server
+docker compose stop postgres        # Stop only the database
+
+# Restart specific services
+docker compose restart claude-control
+
+# View logs for specific service
+docker compose logs -f claude-control
+docker compose logs -f postgres
+docker compose logs -f ntfy
+
+# Execute commands in running containers
+docker compose exec claude-control /bin/sh
+docker compose exec postgres psql -U claude_user -d claude_control
+
+# Check service health
+docker compose ps
+```
+
+#### Development Workflow
+
+```bash
+# Rebuild and restart after code changes
+docker compose down
+docker compose build claude-control
+docker compose up -d
+
+# Or rebuild and restart in one command
+docker compose up -d --build claude-control
+
+# View real-time logs during development
+docker compose logs -f claude-control
+```
+
+#### Troubleshooting Commands
+
+```bash
+# Check container resource usage
+docker compose top
+
+# Inspect service configuration
+docker compose config
+
+# Remove all containers and volumes (destructive)
+docker compose down -v
+
+# View detailed container information
+docker compose ps -a
+docker inspect $(docker compose ps -q claude-control)
+```
+
+#### Environment Variables
+
+Create a `.env` file to customize ports and configuration:
+
+```bash
+# .env
+SERVER_PORT=8080
+WEB_HOST_PORT=8080
+POSTGRES_HOST_PORT=5432
+NTFY_HOST_PORT=80
+NTFY_TOPIC=claude-notifications
+WEB_DOMAIN=localhost:8080
+```
+
+## JSON Hook Response System
+
+This system uses Claude Code's native JSON hook response format instead of external TMux control. The server returns JSON responses that Claude Code interprets directly:
+
+### Response Format
+
+```json
+{
+  "continue": true,           // Allow Claude Code to continue (true/false)
+  "stopReason": "string",     // Optional reason for stopping (if continue: false)
+  "suppressOutput": false     // Hide hook output in Claude Code (true/false)
+}
+```
+
+### Response Types
+
+- **Approved Response**: `{"continue": true}`
+- **Rejected Response**: `{"continue": false, "stopReason": "User rejected this action"}`
+- **Timeout Response**: `{"continue": false, "stopReason": "Timeout: No user response within 5 minutes"}`
+- **Suppressed Response**: `{"continue": true, "suppressOutput": true}`
+
+### Blocking vs Non-Blocking Hooks
+
+- **Blocking Hooks** (PreToolUse, Notification, UserPromptSubmit): Wait for user decision, return appropriate JSON response
+- **Non-Blocking Hooks** (PostToolUse, Stop, etc.): Immediately return `{"continue": true, "suppressOutput": true}`
 
 ## Next Steps
 
-1. **Go Server Development**: Create the webhook handlers, web interface, and TMux integration
-2. **Database Setup**: Implement the PostgreSQL schema and Go database layer
+1. **Testing**: Test the full flow from Claude → Webhook → JSON Response → Claude Code
+2. **User Interface**: Enhance the web interface for better mobile experience
 3. **Claude Hook Configuration**: Set up the hook configuration in Claude Code
-4. **Testing**: Test the full flow from Claude → Webhook → Notification → Phone → Action
-5. **Deployment**: Deploy using Docker Compose and configure Tailscale access
+4. **Deployment**: Deploy using Docker Compose and configure Tailscale access
+5. **Documentation**: Complete API documentation and troubleshooting guides
 
 ## Key Features
 

@@ -47,12 +47,10 @@ services:
       - DATABASE_URL=postgresql://claude_user:claude_password@postgres:5432/claude_control?sslmode=disable
       - NTFY_SERVER_URL=http://ntfy:80
       - NTFY_TOPIC=${NTFY_TOPIC:-claude-notifications}
-      - TMUX_SESSION_NAME=${TMUX_SESSION_NAME:-claude-code-session}
       - WEB_DOMAIN=${WEB_DOMAIN:-localhost:8080}
     ports:
       - "${WEB_HOST_PORT:-8080}:8080"
     volumes:
-      - /var/run/tmux:/var/run/tmux
       - ./templates:/app/templates
     depends_on:
       postgres:

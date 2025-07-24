@@ -17,7 +17,7 @@ type TaskService struct {
 	taskRepo        ports.TaskRepository
 	historyRepo     ports.TaskHistoryRepository
 	notificationSvc ports.NotificationSender
-	tmuxController  ports.TMuxController
+	responseBuilder ports.HookResponseBuilder
 	decisionManager *TaskDecisionManager
 	config          *TaskServiceConfig
 }
@@ -25,7 +25,6 @@ type TaskService struct {
 // TaskServiceConfig holds configuration for the task service
 type TaskServiceConfig struct {
 	WebDomain          string `json:"web_domain"`
-	TMuxSessionName    string `json:"tmux_session_name"`
 	AutoNotifyHookTypes []domain.HookType `json:"auto_notify_hook_types"`
 }
 
@@ -34,7 +33,7 @@ func NewTaskService(
 	taskRepo ports.TaskRepository,
 	historyRepo ports.TaskHistoryRepository,
 	notificationSvc ports.NotificationSender,
-	tmuxController ports.TMuxController,
+	responseBuilder ports.HookResponseBuilder,
 	config *TaskServiceConfig,
 ) *TaskService {
 	if config.AutoNotifyHookTypes == nil {
@@ -50,7 +49,7 @@ func NewTaskService(
 		taskRepo:        taskRepo,
 		historyRepo:     historyRepo,
 		notificationSvc: notificationSvc,
-		tmuxController:  tmuxController,
+		responseBuilder: responseBuilder,
 		decisionManager: NewTaskDecisionManager(),
 		config:          config,
 	}
@@ -148,11 +147,8 @@ func (s *TaskService) TakeAction(ctx context.Context, taskID uuid.UUID, action d
 		log.Printf("Warning: failed to create task history: %v", err)
 	}
 
-	// Send command to tmux session
-	if err := s.sendTMuxCommand(ctx, action); err != nil {
-		log.Printf("Warning: failed to send tmux command: %v", err)
-		// Don't return error here as the task action was successful
-	}
+	// Note: In JSON-based architecture, responses are handled via webhook returns
+	// No need to send TMux commands as Claude Code receives JSON responses directly
 
 	return nil
 }
@@ -177,20 +173,6 @@ func (s *TaskService) sendNotification(ctx context.Context, task *domain.Task) e
 	return nil
 }
 
-// sendTMuxCommand sends the appropriate command to the tmux session
-func (s *TaskService) sendTMuxCommand(ctx context.Context, action domain.ActionType) error {
-	actionCmd := ports.GetActionCommand(action)
-
-	if actionCmd.Command != "" {
-		return s.tmuxController.SendCommand(ctx, s.config.TMuxSessionName, actionCmd.Command)
-	}
-
-	if actionCmd.Keys != "" {
-		return s.tmuxController.SendKeys(ctx, s.config.TMuxSessionName, actionCmd.Keys)
-	}
-
-	return nil
-}
 
 // shouldNotify determines if a hook type should trigger a notification
 func (s *TaskService) shouldNotify(hookType domain.HookType) bool {
@@ -202,12 +184,12 @@ func (s *TaskService) shouldNotify(hookType domain.HookType) bool {
 	return false
 }
 
-// CreateTaskAndWaitForDecision creates a task and waits for user decision with timeout
-func (s *TaskService) CreateTaskAndWaitForDecision(ctx context.Context, hookData *domain.HookData, timeout time.Duration) (*domain.Task, domain.ActionType, error) {
+// CreateTaskAndWaitForDecision creates a task and waits for user decision, returning hook response
+func (s *TaskService) CreateTaskAndWaitForDecision(ctx context.Context, hookData *domain.HookData, timeout time.Duration) (*domain.HookResponse, error) {
 	// Convert hook data to JSON
 	taskDataBytes, err := json.Marshal(hookData)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to marshal hook data: %w", err)
+		return nil, fmt.Errorf("failed to marshal hook data: %w", err)
 	}
 
 	// Create new task
@@ -215,7 +197,7 @@ func (s *TaskService) CreateTaskAndWaitForDecision(ctx context.Context, hookData
 
 	// Store task
 	if err := s.taskRepo.Create(ctx, task); err != nil {
-		return nil, "", fmt.Errorf("failed to create task: %w", err)
+		return nil, fmt.Errorf("failed to create task: %w", err)
 	}
 
 	// Create history entry
@@ -238,11 +220,11 @@ func (s *TaskService) CreateTaskAndWaitForDecision(ctx context.Context, hookData
 	// Wait for user decision
 	decision, err := s.decisionManager.WaitForDecision(ctx, task.ID.String(), timeout)
 	if err != nil {
-		// On timeout or error, update task status
+		// On timeout or error, update task status and return timeout response
 		task.Status = domain.TaskStatusFailed
 		s.taskRepo.Update(ctx, task)
 		
-		return task, "", err
+		return s.responseBuilder.BuildTimeoutResponse(task.ID.String(), timeout), nil
 	}
 
 	// Update task with decision
@@ -258,7 +240,49 @@ func (s *TaskService) CreateTaskAndWaitForDecision(ctx context.Context, hookData
 	})
 	s.historyRepo.Create(ctx, history)
 
-	return task, decision, nil
+	// Return appropriate hook response based on user decision
+	return s.responseBuilder.BuildResponseFromDecision(task.ID.String(), decision), nil
+}
+
+// CreateNonBlockingResponse creates a hook response for non-blocking hooks
+func (s *TaskService) CreateNonBlockingResponse(ctx context.Context, hookData *domain.HookData, suppressOutput bool) (*domain.HookResponse, error) {
+	// Convert hook data to JSON
+	taskDataBytes, err := json.Marshal(hookData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal hook data: %w", err)
+	}
+
+	// Create new task
+	task := domain.NewTask(hookData.Type, json.RawMessage(taskDataBytes))
+	task.Status = domain.TaskStatusCompleted // Non-blocking tasks are immediately completed
+
+	// Store task
+	if err := s.taskRepo.Create(ctx, task); err != nil {
+		return nil, fmt.Errorf("failed to create task: %w", err)
+	}
+
+	// Create history entry
+	history := domain.NewTaskHistory(task.ID, domain.HistoryActionCreated, map[string]interface{}{
+		"hook_type": hookData.Type.String(),
+		"tool":      hookData.Tool,
+		"blocking":  false,
+	})
+	if err := s.historyRepo.Create(ctx, history); err != nil {
+		log.Printf("Warning: failed to create task history: %v", err)
+	}
+
+	// Send notification if this hook type requires it
+	if s.shouldNotify(hookData.Type) {
+		if err := s.sendNotification(ctx, task); err != nil {
+			log.Printf("Warning: failed to send notification for task %s: %v", task.ID, err)
+		}
+	}
+
+	// Return appropriate non-blocking response
+	if suppressOutput {
+		return s.responseBuilder.BuildSuppressedResponse(), nil
+	}
+	return s.responseBuilder.BuildContinueResponse(), nil
 }
 
 // SendDecisionToTask sends a user decision to a waiting task

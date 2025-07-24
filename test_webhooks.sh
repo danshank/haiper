@@ -193,10 +193,6 @@ if [ $TESTS_FAILED -eq 0 ]; then
     echo "✅ Web dashboard is accessible"
     echo "✅ API endpoints are responding correctly"
     echo ""
-    echo "Next steps:"
-    echo "1. Configure Claude Code hooks using CLAUDE_HOOKS_SETUP.md"
-    echo "2. Set up NTFY on your phone for notifications"
-    echo "3. Create tmux session: tmux new-session -d -s claude-code-session"
     exit 0
 else
     echo -e "\n${RED}❌ Some tests failed. Check the output above for details.${NC}"

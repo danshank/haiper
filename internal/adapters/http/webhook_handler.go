@@ -26,57 +26,39 @@ func NewWebhookHandler(taskService *services.TaskService) *WebhookHandler {
 
 // RegisterRoutes registers webhook routes with the router
 func (h *WebhookHandler) RegisterRoutes(router *mux.Router) {
-	// Non-blocking webhook handlers (fire-and-forget)
+	// Blocking webhook handlers (require user approval)
+	router.HandleFunc("/webhook/notification", h.handleNotificationBlocking).Methods("POST")
+	router.HandleFunc("/webhook/stop", h.handleStopBlocking).Methods("POST")
+	router.HandleFunc("/webhook/subagent-stop", h.handleSubagentStopBlocking).Methods("POST")
+
+	// Non-blocking webhook handlers (immediate response, no task creation)
 	router.HandleFunc("/webhook/pre-tool-use", h.handlePreToolUse).Methods("POST")
 	router.HandleFunc("/webhook/post-tool-use", h.handlePostToolUse).Methods("POST")
-	router.HandleFunc("/webhook/notification", h.handleNotification).Methods("POST")
 	router.HandleFunc("/webhook/user-prompt-submit", h.handleUserPromptSubmit).Methods("POST")
-	router.HandleFunc("/webhook/stop", h.handleStop).Methods("POST")
-	router.HandleFunc("/webhook/subagent-stop", h.handleSubagentStop).Methods("POST")
 	router.HandleFunc("/webhook/pre-compact", h.handlePreCompact).Methods("POST")
-
-	// Blocking webhook handlers (wait for user decision)
-	router.HandleFunc("/webhook/pre-tool-use-blocking", h.handlePreToolUseBlocking).Methods("POST")
-	router.HandleFunc("/webhook/notification-blocking", h.handleNotificationBlocking).Methods("POST")
-	router.HandleFunc("/webhook/user-prompt-submit-blocking", h.handleUserPromptSubmitBlocking).Methods("POST")
 
 	// Generic webhook handler for any hook type
 	router.HandleFunc("/webhook/{hookType}", h.handleGenericWebhook).Methods("POST")
 }
 
-// handlePreToolUse handles PreToolUse webhook events
-func (h *WebhookHandler) handlePreToolUse(w http.ResponseWriter, r *http.Request) {
-	h.handleWebhook(w, r, domain.HookTypePreToolUse)
-}
-
 // handlePostToolUse handles PostToolUse webhook events
 func (h *WebhookHandler) handlePostToolUse(w http.ResponseWriter, r *http.Request) {
-	h.handleWebhook(w, r, domain.HookTypePostToolUse)
+	h.handleNonBlockingWebhook(w, r, domain.HookTypePostToolUse)
 }
 
-// handleNotification handles Notification webhook events
-func (h *WebhookHandler) handleNotification(w http.ResponseWriter, r *http.Request) {
-	h.handleWebhook(w, r, domain.HookTypeNotification)
+// handleStopBlocking handles blocking Stop webhook events
+func (h *WebhookHandler) handleStopBlocking(w http.ResponseWriter, r *http.Request) {
+	h.handleBlockingWebhook(w, r, domain.HookTypeStop)
 }
 
-// handleUserPromptSubmit handles UserPromptSubmit webhook events
-func (h *WebhookHandler) handleUserPromptSubmit(w http.ResponseWriter, r *http.Request) {
-	h.handleWebhook(w, r, domain.HookTypeUserPromptSubmit)
+// handleSubagentStopBlocking handles blocking SubagentStop webhook events
+func (h *WebhookHandler) handleSubagentStopBlocking(w http.ResponseWriter, r *http.Request) {
+	h.handleBlockingWebhook(w, r, domain.HookTypeSubagentStop)
 }
 
-// handleStop handles Stop webhook events
-func (h *WebhookHandler) handleStop(w http.ResponseWriter, r *http.Request) {
-	h.handleWebhook(w, r, domain.HookTypeStop)
-}
-
-// handleSubagentStop handles SubagentStop webhook events
-func (h *WebhookHandler) handleSubagentStop(w http.ResponseWriter, r *http.Request) {
-	h.handleWebhook(w, r, domain.HookTypeSubagentStop)
-}
-
-// handlePreCompact handles PreCompact webhook events
+// handlePreCompact handles non-blocking PreCompact webhook events
 func (h *WebhookHandler) handlePreCompact(w http.ResponseWriter, r *http.Request) {
-	h.handleWebhook(w, r, domain.HookTypePreCompact)
+	h.handleNonBlockingWebhook(w, r, domain.HookTypePreCompact)
 }
 
 // handleGenericWebhook handles webhook events with hook type from URL path
@@ -90,53 +72,64 @@ func (h *WebhookHandler) handleGenericWebhook(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	h.handleWebhook(w, r, hookType)
+	h.handleNonBlockingWebhook(w, r, hookType)
 }
 
-// handleWebhook is the core webhook handler logic
-func (h *WebhookHandler) handleWebhook(w http.ResponseWriter, r *http.Request, hookType domain.HookType) {
-	// Parse the incoming webhook payload
+// handleNonBlockingWebhook handles webhooks that don't require user approval
+func (h *WebhookHandler) handleNonBlockingWebhook(w http.ResponseWriter, r *http.Request, hookType domain.HookType) {
+	// Parse the incoming webhook payload with detailed error logging
 	var payload map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "Invalid JSON payload")
+	if err := DecodeJSONWithDebug(r, &payload, 1024*1024); err != nil { // 1MB limit
+		log.Printf("Expected JSON format for %s: %s", hookType.String(), GetExpectedJSONFormat(hookType.String()))
+		h.respondWithError(w, http.StatusBadRequest, fmt.Sprintf("JSON parsing failed: %v", err))
 		return
 	}
 
-	// Create hook data
+	// Extract hook type from Claude Code JSON (prefer hook_event_name over our URL-based hookType)
+	if claudeHookType, ok := payload["hook_event_name"]; ok {
+		if hookTypeStr, ok := claudeHookType.(string); ok {
+			if parsedType, err := domain.ParseHookType(hookTypeStr); err == nil {
+				hookType = parsedType
+			}
+		}
+	}
+
+	// Create hook data with full Claude Code payload
 	hookData := domain.NewHookData(hookType, payload)
 
-	// Extract tool information if present
-	if tool, ok := payload["tool"]; ok {
+	// Extract tool information from Claude Code format
+	if tool, ok := payload["tool_name"]; ok {
+		if toolStr, ok := tool.(string); ok {
+			hookData.Tool = toolStr
+		}
+	} else if tool, ok := payload["tool"]; ok {
 		if toolStr, ok := tool.(string); ok {
 			hookData.Tool = toolStr
 		}
 	}
 
-	// Extract matcher information if present (for PreCompact)
+	// Extract matcher information for PreCompact
 	if matcher, ok := payload["matcher"]; ok {
 		if matcherStr, ok := matcher.(string); ok {
 			hookData.Matcher = matcherStr
 		}
 	}
 
-	// Create task from hook
-	task, err := h.taskService.CreateTaskFromHook(r.Context(), hookData)
-	if err != nil {
-		log.Printf("Failed to create task from hook: %v", err)
-		h.respondWithError(w, http.StatusInternalServerError, "Failed to process webhook")
-		return
+	// Log received Claude Code data for debugging
+	log.Printf("Received Claude Code hook data: session_id=%v, cwd=%v, tool_name=%v", 
+		payload["session_id"], payload["cwd"], payload["tool_name"])
+
+	// Return immediate non-blocking response (no task creation needed)
+	hookResponse := &domain.HookResponse{
+		Continue:       true,
+		SuppressOutput: true, // Hide output for cleaner Claude Code behavior
 	}
 
 	// Log the webhook event
-	log.Printf("Processed %s webhook, created task %s", hookType.String(), task.ID.String())
+	log.Printf("Processed %s webhook with immediate response: %s", hookType.String(), hookResponse.String())
 
-	// Respond with the created task
-	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{
-		"success":  true,
-		"task_id":  task.ID.String(),
-		"message":  fmt.Sprintf("Webhook processed successfully for %s", hookType.String()),
-		"task_url": fmt.Sprintf("/task/%s", task.ID.String()),
-	})
+	// Send Claude Code compliant JSON response
+	h.respondWithJSON(w, http.StatusOK, hookResponse)
 }
 
 // respondWithError sends an error response
@@ -147,9 +140,9 @@ func (h *WebhookHandler) respondWithError(w http.ResponseWriter, statusCode int,
 	})
 }
 
-// handlePreToolUseBlocking handles blocking PreToolUse webhook events
-func (h *WebhookHandler) handlePreToolUseBlocking(w http.ResponseWriter, r *http.Request) {
-	h.handleBlockingWebhook(w, r, domain.HookTypePreToolUse)
+// handlePreToolUse handles non-blocking PreToolUse webhook events
+func (h *WebhookHandler) handlePreToolUse(w http.ResponseWriter, r *http.Request) {
+	h.handleNonBlockingWebhook(w, r, domain.HookTypePreToolUse)
 }
 
 // handleNotificationBlocking handles blocking Notification webhook events
@@ -157,82 +150,69 @@ func (h *WebhookHandler) handleNotificationBlocking(w http.ResponseWriter, r *ht
 	h.handleBlockingWebhook(w, r, domain.HookTypeNotification)
 }
 
-// handleUserPromptSubmitBlocking handles blocking UserPromptSubmit webhook events
-func (h *WebhookHandler) handleUserPromptSubmitBlocking(w http.ResponseWriter, r *http.Request) {
-	h.handleBlockingWebhook(w, r, domain.HookTypeUserPromptSubmit)
+// handleUserPromptSubmit handles non-blocking UserPromptSubmit webhook events
+func (h *WebhookHandler) handleUserPromptSubmit(w http.ResponseWriter, r *http.Request) {
+	h.handleNonBlockingWebhook(w, r, domain.HookTypeUserPromptSubmit)
 }
 
 // handleBlockingWebhook is the core blocking webhook handler logic
 func (h *WebhookHandler) handleBlockingWebhook(w http.ResponseWriter, r *http.Request, hookType domain.HookType) {
-	// Parse the incoming webhook payload
+	// Parse the incoming webhook payload with detailed error logging
 	var payload map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "Invalid JSON payload")
+	if err := DecodeJSONWithDebug(r, &payload, 1024*1024); err != nil { // 1MB limit
+		log.Printf("Expected JSON format for %s: %s", hookType.String(), GetExpectedJSONFormat(hookType.String()))
+		h.respondWithError(w, http.StatusBadRequest, fmt.Sprintf("JSON parsing failed: %v", err))
 		return
 	}
 
-	// Create hook data
+	// Extract hook type from Claude Code JSON (prefer hook_event_name over our URL-based hookType)
+	if claudeHookType, ok := payload["hook_event_name"]; ok {
+		if hookTypeStr, ok := claudeHookType.(string); ok {
+			if parsedType, err := domain.ParseHookType(hookTypeStr); err == nil {
+				hookType = parsedType
+			}
+		}
+	}
+
+	// Create hook data with full Claude Code payload
 	hookData := domain.NewHookData(hookType, payload)
 
-	// Extract tool information if present
-	if tool, ok := payload["tool"]; ok {
+	// Extract tool information from Claude Code format
+	if tool, ok := payload["tool_name"]; ok {
+		if toolStr, ok := tool.(string); ok {
+			hookData.Tool = toolStr
+		}
+	} else if tool, ok := payload["tool"]; ok {
 		if toolStr, ok := tool.(string); ok {
 			hookData.Tool = toolStr
 		}
 	}
 
-	// Extract matcher information if present (for PreCompact)
+	// Extract matcher information for PreCompact
 	if matcher, ok := payload["matcher"]; ok {
 		if matcherStr, ok := matcher.(string); ok {
 			hookData.Matcher = matcherStr
 		}
 	}
 
-	// Create task and wait for user decision (5 minute timeout)
-	task, decision, err := h.taskService.CreateTaskAndWaitForDecision(r.Context(), hookData, 5*time.Minute)
-	if err != nil {
-		log.Printf("Failed to get user decision for task: %v", err)
+	// Log received Claude Code data for debugging
+	log.Printf("Received Claude Code hook data: session_id=%v, cwd=%v, tool_name=%v", 
+		payload["session_id"], payload["cwd"], payload["tool_name"])
 
-		// On timeout or error, apply default policy
-		h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
-			"continue":   false,
-			"stopReason": fmt.Sprintf("Decision timeout or error: %v", err),
-			"task_id":    task.ID.String(),
-		})
+	// Create task and wait for user decision (5 minute timeout)
+	log.Printf("Creating task and waiting for user decision for hook: %s", hookType.String())
+	hookResponse, err := h.taskService.CreateTaskAndWaitForDecision(r.Context(), hookData, 5*time.Minute)
+	if err != nil {
+		log.Printf("Failed to get user decision for hook: %v", err)
+		h.respondWithError(w, http.StatusInternalServerError, "Failed to process blocking webhook")
 		return
 	}
 
-	// Log the decision
-	log.Printf("User decision for %s task %s: %s", hookType.String(), task.ID.String()[:8], decision)
+	// Log the response type
+	log.Printf("Hook response for %s: %s", hookType.String(), hookResponse.String())
 
-	// Respond based on user decision
-	switch decision {
-	case domain.ActionTypeApprove:
-		h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
-			"continue": true,
-			"task_id":  task.ID.String(),
-			"message":  "User approved the action",
-		})
-	case domain.ActionTypeReject:
-		h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
-			"continue":   false,
-			"stopReason": "User rejected the action",
-			"task_id":    task.ID.String(),
-		})
-	case domain.ActionTypeCancel:
-		h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
-			"continue":   false,
-			"stopReason": "User cancelled the action",
-			"task_id":    task.ID.String(),
-		})
-	default:
-		// Continue, retry, or other actions default to continue
-		h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
-			"continue": true,
-			"task_id":  task.ID.String(),
-			"message":  fmt.Sprintf("User action: %s", decision),
-		})
-	}
+	// Send Claude Code compliant JSON response
+	h.respondWithJSON(w, http.StatusOK, hookResponse)
 }
 
 // respondWithJSON sends a JSON response
