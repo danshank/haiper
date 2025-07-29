@@ -17,7 +17,7 @@ type TaskService struct {
 	historyRepo     ports.TaskHistoryRepository
 	notificationSvc ports.NotificationSender
 	responseBuilder ports.HookResponseBuilder
-	decisionManager *TaskDecisionManager
+	decisionManager ports.TaskDecisionManager
 	config          *TaskServiceConfig
 }
 
