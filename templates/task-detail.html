@@ -158,12 +158,48 @@
         </div>
 
         <div class="card">
-            <h3>Task Data</h3>
-            <div class="task-data">{{printf "%s" .Task.TaskData}}</div>
+            <h3>Hook Data</h3>
+            {{if .Task.HookData}}
+            <div class="task-data">
+                <strong>Hook Type:</strong> {{.Task.HookData.Type}}<br>
+                {{if .Task.HookData.GetSessionID}}
+                <strong>Session ID:</strong> {{.Task.HookData.GetSessionID}}<br>
+                {{end}}
+                {{if .Task.HookData.GetToolName}}
+                <strong>Tool Name:</strong> {{.Task.HookData.GetToolName}}<br>
+                {{end}}
+                <br>
+                <strong>Raw Data:</strong><br>
+                <pre>{{printf "%+v" .Task.HookData.Data}}</pre>
+            </div>
+            {{else}}
+            <div class="task-data">No hook data available</div>
+            {{end}}
         </div>
 
         {{if .Task.IsActionable}}
         <div class="card">
+            {{if eq .Task.HookType "Stop"}}
+            <h3>Claude Code Stop - Provide Guidance</h3>
+            <p>Claude Code has been stopped and is waiting for your guidance. Enter your message to continue:</p>
+            
+            <form method="POST" action="/task/{{.Task.ID}}/stop-input">
+                <div class="comment-section">
+                    <label for="guidance">Your Guidance for Claude Code:</label>
+                    <textarea id="guidance" name="guidance" class="comment-input" rows="4" 
+                              placeholder="Enter your guidance message (e.g., 'continue with the task', 'try a different approach', etc.)..." 
+                              required style="min-height: 100px; resize: vertical;"></textarea>
+                </div>
+                
+                <input type="hidden" name="timestamp" id="timestamp">
+                
+                <div class="actions">
+                    <button type="submit" class="btn btn-continue" style="background: #4caf50;">
+                        📤 Send Guidance to Claude Code
+                    </button>
+                </div>
+            </form>
+            {{else}}
             <h3>Take Action</h3>
             <p>This task requires your attention. Choose an action to send to Claude Code:</p>
             
@@ -191,6 +227,7 @@
                     </button>
                 </div>
             </form>
+            {{end}}
         </div>
         {{else}}
         <div class="card">
@@ -222,11 +259,55 @@
         // Set timestamp when form is submitted
         document.getElementById('timestamp').value = new Date().toISOString();
         
-        // Auto-refresh every 15 seconds if task is still actionable
+        // Real-time updates for Stop webhook tasks
         {{if .Task.IsActionable}}
+        {{if eq .Task.HookType "Stop"}}
+        // More frequent updates for Stop webhooks (every 5 seconds)
+        setInterval(() => {
+            // Use fetch to get updated task status without full page reload
+            fetch('/api/tasks/{{.Task.ID}}')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.task) {
+                        // Check if task status has changed
+                        if (data.task.status !== '{{.Task.Status}}') {
+                            // Task status changed, reload the page to show updated UI
+                            window.location.reload();
+                        }
+                        
+                        // Update status badge if it exists
+                        const statusBadge = document.querySelector('.status-badge');
+                        if (statusBadge && data.task.status !== '{{.Task.Status}}') {
+                            statusBadge.textContent = data.task.status.toUpperCase();
+                            statusBadge.className = `status-badge status-${data.task.status}`;
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.log('Status update failed:', error);
+                });
+        }, 5000);
+        {{else}}
+        // Regular auto-refresh for other task types every 15 seconds
         setTimeout(() => {
             window.location.reload();
         }, 15000);
+        {{end}}
+        {{end}}
+        
+        // Show processing status for Stop webhook forms
+        {{if eq .Task.HookType "Stop"}}
+        const stopForm = document.querySelector('form[action*="/stop-input"]');
+        if (stopForm) {
+            stopForm.addEventListener('submit', function(e) {
+                const submitButton = this.querySelector('button[type="submit"]');
+                if (submitButton) {
+                    submitButton.textContent = '⏳ Sending to Claude Code...';
+                    submitButton.disabled = true;
+                    submitButton.style.background = '#9e9e9e';
+                }
+            });
+        }
         {{end}}
     </script>
 </body>

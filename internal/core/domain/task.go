@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,7 +47,7 @@ func (a ActionType) String() string {
 type Task struct {
 	ID           uuid.UUID              `json:"id"`
 	HookType     HookType               `json:"hook_type"`
-	TaskData     json.RawMessage        `json:"task_data"`     // Raw JSON from Claude Code hook
+	HookData     *HookData              `json:"hook_data"`     // Structured hook data from Claude Code
 	Status       TaskStatus             `json:"status"`
 	CreatedAt    time.Time              `json:"created_at"`
 	UpdatedAt    time.Time              `json:"updated_at"`
@@ -56,13 +55,13 @@ type Task struct {
 	ResponseData map[string]interface{} `json:"response_data,omitempty"` // User's response/feedback
 }
 
-// NewTask creates a new task with default values
-func NewTask(hookType HookType, taskData json.RawMessage) *Task {
+// NewTask creates a new task with structured hook data
+func NewTask(hookData *HookData) *Task {
 	now := time.Now()
 	return &Task{
 		ID:        uuid.New(),
-		HookType:  hookType,
-		TaskData:  taskData,
+		HookType:  hookData.Type,
+		HookData:  hookData,
 		Status:    TaskStatusPending,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -102,11 +101,13 @@ func (t *Task) IsActionable() bool {
 // RequiresUserInput returns true if this hook type typically requires user interaction
 func (t *Task) RequiresUserInput() bool {
 	switch t.HookType {
-	case HookTypeNotification, HookTypePreToolUse:
-		return true
+	case HookTypePreToolUse:
+		return true // PreToolUse may need approval/blocking
 	case HookTypeUserPromptSubmit:
 		return true // May need validation/blocking
 	default:
+		// Stop and Notification webhooks are now non-blocking
+		// They create tasks for logging/monitoring but don't require blocking decisions
 		return false
 	}
 }

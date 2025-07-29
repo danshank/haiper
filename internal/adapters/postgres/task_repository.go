@@ -29,16 +29,21 @@ func (r *TaskRepository) Create(ctx context.Context, task *domain.Task) error {
 		INSERT INTO tasks (id, hook_type, task_data, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6)`
 
-	// Convert task data to string for PostgreSQL
-	taskDataStr := string(task.TaskData)
-	if taskDataStr == "" || taskDataStr == "null" {
-		taskDataStr = "{}"
+	// Serialize hook data to JSON for PostgreSQL storage
+	hookDataJSON, err := json.Marshal(task.HookData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal hook data: %w", err)
+	}
+	
+	hookDataStr := string(hookDataJSON)
+	if hookDataStr == "" || hookDataStr == "null" {
+		hookDataStr = "{}"
 	}
 
-	_, err := r.db.ExecContext(ctx, query,
+	_, err = r.db.ExecContext(ctx, query,
 		task.ID,
 		task.HookType.String(),
-		taskDataStr,
+		hookDataStr,
 		task.Status.String(),
 		task.CreatedAt,
 		task.UpdatedAt,
@@ -93,10 +98,16 @@ func (r *TaskRepository) Update(ctx context.Context, task *domain.Task) error {
 		}
 	}
 
+	// Serialize hook data to JSON for PostgreSQL storage
+	hookDataJSON, err := json.Marshal(task.HookData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal hook data: %w", err)
+	}
+
 	result, err := r.db.ExecContext(ctx, query,
 		task.ID,
 		task.HookType.String(),
-		string(task.TaskData), // Convert json.RawMessage to string
+		string(hookDataJSON), // Serialize structured hook data
 		task.Status.String(),
 		task.UpdatedAt,
 		actionTaken,
@@ -237,11 +248,12 @@ func (r *TaskRepository) scanTask(scanner interface {
 	var hookTypeStr, statusStr string
 	var actionTakenStr *string
 	var responseDataJSON []byte
+	var hookDataJSON []byte
 
 	err := scanner.Scan(
 		&task.ID,
 		&hookTypeStr,
-		&task.TaskData,
+		&hookDataJSON,
 		&statusStr,
 		&task.CreatedAt,
 		&task.UpdatedAt,
@@ -259,6 +271,15 @@ func (r *TaskRepository) scanTask(scanner interface {
 		return nil, fmt.Errorf("invalid hook type in database: %s", hookTypeStr)
 	}
 	task.HookType = hookType
+
+	// Parse hook data
+	if len(hookDataJSON) > 0 {
+		var hookData domain.HookData
+		if err := json.Unmarshal(hookDataJSON, &hookData); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal hook data: %w", err)
+		}
+		task.HookData = &hookData
+	}
 
 	// Parse status
 	task.Status = domain.TaskStatus(statusStr)

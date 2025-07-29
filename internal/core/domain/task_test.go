@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -9,21 +8,32 @@ import (
 )
 
 func TestNewTask(t *testing.T) {
-	hookType := HookTypePreToolUse
-	taskData := json.RawMessage(`{"tool": "Bash", "command": "ls -la"}`)
+	payload := map[string]interface{}{
+		"hook_event_name": "PreToolUse",
+		"session_id":      "test-session-123",
+		"tool_name":       "Bash",
+		"tool_input": map[string]interface{}{
+			"command": "ls -la",
+		},
+	}
+	hookData := NewHookData(HookTypePreToolUse, payload)
 
-	task := NewTask(hookType, taskData)
+	task := NewTask(hookData)
 
 	if task.ID == uuid.Nil {
 		t.Error("Expected task ID to be generated")
 	}
 
-	if task.HookType != hookType {
-		t.Errorf("Expected hook type %s, got %s", hookType, task.HookType)
+	if task.HookType != HookTypePreToolUse {
+		t.Errorf("Expected hook type %s, got %s", HookTypePreToolUse, task.HookType)
 	}
 
-	if string(task.TaskData) != string(taskData) {
-		t.Errorf("Expected task data %s, got %s", taskData, task.TaskData)
+	if task.HookData == nil {
+		t.Error("Expected hook data to be set")
+	}
+
+	if task.HookData.GetSessionID() != "test-session-123" {
+		t.Errorf("Expected session ID test-session-123, got %s", task.HookData.GetSessionID())
 	}
 
 	if task.Status != TaskStatusPending {
@@ -40,7 +50,8 @@ func TestNewTask(t *testing.T) {
 }
 
 func TestTask_UpdateStatus(t *testing.T) {
-	task := NewTask(HookTypePreToolUse, json.RawMessage(`{}`))
+	hookData := NewHookData(HookTypePreToolUse, map[string]interface{}{})
+	task := NewTask(hookData)
 	originalUpdatedAt := task.UpdatedAt
 
 	// Wait a tiny bit to ensure timestamp changes
@@ -58,7 +69,8 @@ func TestTask_UpdateStatus(t *testing.T) {
 }
 
 func TestTask_TakeAction(t *testing.T) {
-	task := NewTask(HookTypePreToolUse, json.RawMessage(`{}`))
+	hookData := NewHookData(HookTypePreToolUse, map[string]interface{}{})
+	task := NewTask(hookData)
 	responseData := map[string]interface{}{
 		"reason": "Approved by user",
 	}
@@ -95,7 +107,8 @@ func TestTask_IsActionable(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		task := NewTask(HookTypePreToolUse, json.RawMessage(`{}`))
+		hookData := NewHookData(HookTypePreToolUse, map[string]interface{}{})
+		task := NewTask(hookData)
 		task.Status = tt.status
 
 		if task.IsActionable() != tt.expected {
@@ -110,16 +123,17 @@ func TestTask_RequiresUserInput(t *testing.T) {
 		expected bool
 	}{
 		{HookTypePreToolUse, true},
-		{HookTypeNotification, true},
 		{HookTypeUserPromptSubmit, true},
 		{HookTypePostToolUse, false},
-		{HookTypeStop, false},
+		{HookTypeNotification, false}, // Now non-blocking
+		{HookTypeStop, false},         // Now non-blocking
 		{HookTypeSubagentStop, false},
 		{HookTypePreCompact, false},
 	}
 
 	for _, tt := range tests {
-		task := NewTask(tt.hookType, json.RawMessage(`{}`))
+		hookData := NewHookData(tt.hookType, map[string]interface{}{})
+		task := NewTask(hookData)
 
 		if task.RequiresUserInput() != tt.expected {
 			t.Errorf("Expected RequiresUserInput() to return %t for hook type %s", tt.expected, tt.hookType)

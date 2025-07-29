@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -55,36 +54,47 @@ func NewTaskService(
 	}
 }
 
-// CreateTaskFromHook processes an incoming Claude Code hook and creates a task
-func (s *TaskService) CreateTaskFromHook(ctx context.Context, hookData *domain.HookData) (*domain.Task, error) {
-	// Convert hook data to JSON
-	taskDataBytes, err := json.Marshal(hookData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal hook data: %w", err)
-	}
-
-	// Create new task
-	task := domain.NewTask(hookData.Type, json.RawMessage(taskDataBytes))
-
+// CreateTask creates a new task with structured hook data
+func (s *TaskService) CreateTask(ctx context.Context, task *domain.Task) error {
 	// Store task
 	if err := s.taskRepo.Create(ctx, task); err != nil {
-		return nil, fmt.Errorf("failed to create task: %w", err)
+		return fmt.Errorf("failed to create task: %w", err)
 	}
 
 	// Create history entry
 	history := domain.NewTaskHistory(task.ID, domain.HistoryActionCreated, map[string]interface{}{
-		"hook_type": hookData.Type.String(),
-		"tool":      hookData.Tool,
+		"hook_type":  task.HookType.String(),
+		"session_id": task.HookData.GetSessionID(),
+		"tool_name":  task.HookData.GetToolName(),
 	})
 	if err := s.historyRepo.Create(ctx, history); err != nil {
 		log.Printf("Warning: failed to create task history: %v", err)
+		// Don't fail task creation due to history failure
 	}
 
-	// Send notification if this hook type requires it
-	if s.shouldNotify(hookData.Type) {
+	// Send notification if configured for this hook type
+	s.sendNotificationIfRequired(ctx, task)
+
+	return nil
+}
+
+// sendNotificationIfRequired sends a notification if the hook type requires it
+func (s *TaskService) sendNotificationIfRequired(ctx context.Context, task *domain.Task) {
+	if s.shouldNotify(task.HookType) {
 		if err := s.sendNotification(ctx, task); err != nil {
 			log.Printf("Warning: failed to send notification for task %s: %v", task.ID, err)
 		}
+	}
+}
+
+// CreateTaskFromHook processes an incoming Claude Code hook and creates a task
+func (s *TaskService) CreateTaskFromHook(ctx context.Context, hookData *domain.HookData) (*domain.Task, error) {
+	// Create new task with structured data
+	task := domain.NewTask(hookData)
+
+	// Store task using the new CreateTask method
+	if err := s.CreateTask(ctx, task); err != nil {
+		return nil, err
 	}
 
 	return task, nil
@@ -186,14 +196,8 @@ func (s *TaskService) shouldNotify(hookType domain.HookType) bool {
 
 // CreateTaskAndWaitForDecision creates a task and waits for user decision, returning hook response
 func (s *TaskService) CreateTaskAndWaitForDecision(ctx context.Context, hookData *domain.HookData, timeout time.Duration) (*domain.HookResponse, error) {
-	// Convert hook data to JSON
-	taskDataBytes, err := json.Marshal(hookData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal hook data: %w", err)
-	}
-
-	// Create new task
-	task := domain.NewTask(hookData.Type, json.RawMessage(taskDataBytes))
+	// Create new task with structured data
+	task := domain.NewTask(hookData)
 
 	// Store task
 	if err := s.taskRepo.Create(ctx, task); err != nil {
@@ -202,9 +206,10 @@ func (s *TaskService) CreateTaskAndWaitForDecision(ctx context.Context, hookData
 
 	// Create history entry
 	history := domain.NewTaskHistory(task.ID, domain.HistoryActionCreated, map[string]interface{}{
-		"hook_type": hookData.Type.String(),
-		"tool":      hookData.Tool,
-		"blocking":  true,
+		"hook_type":  hookData.Type.String(),
+		"session_id": hookData.GetSessionID(),
+		"tool_name":  hookData.GetToolName(),
+		"blocking":   true,
 	})
 	if err := s.historyRepo.Create(ctx, history); err != nil {
 		log.Printf("Warning: failed to create task history: %v", err)
@@ -246,14 +251,8 @@ func (s *TaskService) CreateTaskAndWaitForDecision(ctx context.Context, hookData
 
 // CreateNonBlockingResponse creates a hook response for non-blocking hooks
 func (s *TaskService) CreateNonBlockingResponse(ctx context.Context, hookData *domain.HookData, suppressOutput bool) (*domain.HookResponse, error) {
-	// Convert hook data to JSON
-	taskDataBytes, err := json.Marshal(hookData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal hook data: %w", err)
-	}
-
-	// Create new task
-	task := domain.NewTask(hookData.Type, json.RawMessage(taskDataBytes))
+	// Create new task with structured data
+	task := domain.NewTask(hookData)
 	task.Status = domain.TaskStatusCompleted // Non-blocking tasks are immediately completed
 
 	// Store task
@@ -263,9 +262,10 @@ func (s *TaskService) CreateNonBlockingResponse(ctx context.Context, hookData *d
 
 	// Create history entry
 	history := domain.NewTaskHistory(task.ID, domain.HistoryActionCreated, map[string]interface{}{
-		"hook_type": hookData.Type.String(),
-		"tool":      hookData.Tool,
-		"blocking":  false,
+		"hook_type":  hookData.Type.String(),
+		"session_id": hookData.GetSessionID(),
+		"tool_name":  hookData.GetToolName(),
+		"blocking":   false,
 	})
 	if err := s.historyRepo.Create(ctx, history); err != nil {
 		log.Printf("Warning: failed to create task history: %v", err)

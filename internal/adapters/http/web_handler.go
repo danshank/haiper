@@ -17,15 +17,17 @@ import (
 
 // WebHandler handles web interface requests
 type WebHandler struct {
-	taskService *services.TaskService
-	templates   *template.Template
+	taskService     *services.TaskService
+	webhookHandler  *WebhookHandler
+	templates       *template.Template
 }
 
 // NewWebHandler creates a new web handler
-func NewWebHandler(taskService *services.TaskService) *WebHandler {
+func NewWebHandler(taskService *services.TaskService, webhookHandler *WebhookHandler) *WebHandler {
 	return &WebHandler{
-		taskService: taskService,
-		templates:   template.Must(template.New("").ParseGlob("templates/*.html")),
+		taskService:    taskService,
+		webhookHandler: webhookHandler,
+		templates:      template.Must(template.New("").ParseGlob("templates/*.html")),
 	}
 }
 
@@ -36,6 +38,7 @@ func (h *WebHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/dashboard", h.handleDashboard).Methods("GET")
 	router.HandleFunc("/task/{taskId}", h.handleTaskDetail).Methods("GET")
 	router.HandleFunc("/task/{taskId}/action", h.handleTaskAction).Methods("POST")
+	router.HandleFunc("/task/{taskId}/stop-input", h.handleStopInput).Methods("POST")
 	
 	// API routes
 	router.HandleFunc("/api/tasks", h.handleListTasks).Methods("GET")
@@ -166,6 +169,105 @@ func (h *WebHandler) handleTaskAction(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Failed to take action %s on task %s: %v", action, taskID, err)
 		http.Error(w, "Failed to process action", http.StatusInternalServerError)
 		return
+	}
+
+	// Redirect back to task detail page
+	http.Redirect(w, r, fmt.Sprintf("/task/%s", taskID.String()), http.StatusSeeOther)
+}
+
+// handleStopInput processes user input for Stop webhook tasks
+func (h *WebHandler) handleStopInput(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	taskIDStr := vars["taskId"]
+	
+	taskID, err := uuid.Parse(taskIDStr)
+	if err != nil {
+		http.Error(w, "Invalid task ID", http.StatusBadRequest)
+		return
+	}
+
+	// Parse form data
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid form data", http.StatusBadRequest)
+		return
+	}
+
+	guidance := r.FormValue("guidance")
+	if guidance == "" {
+		http.Error(w, "Guidance text is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get the task to verify it's a Stop webhook and get session info
+	task, _, err := h.taskService.GetTaskWithHistory(r.Context(), taskID)
+	if err != nil {
+		log.Printf("Failed to get task %s: %v", taskID, err)
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify this is a Stop webhook task
+	if task.HookType.String() != "Stop" {
+		http.Error(w, "This endpoint is only for Stop webhook tasks", http.StatusBadRequest)
+		return
+	}
+
+	// Verify task is still actionable
+	if !task.IsActionable() {
+		http.Error(w, "This task has already been processed", http.StatusBadRequest)
+		return
+	}
+
+	// Extract session ID from structured hook data
+	sessionID := task.HookData.GetSessionID()
+	if sessionID == "" {
+		log.Printf("No session_id found in hook data for task %s", taskID)
+		http.Error(w, "No session ID found in task data", http.StatusBadRequest)
+		return
+	}
+
+	// Update the webhook handler's stop input with user guidance
+	h.webhookHandler.SetStopInput(guidance)
+
+	// Send the guidance to Claude Code via the CLI adapter
+	log.Printf("Sending user guidance '%s' to Claude Code session %s", guidance, sessionID)
+	
+	claudeResponse, err := h.webhookHandler.claudeAdapter.SendInputToStopWebhook(r.Context(), sessionID, guidance)
+	if err != nil {
+		log.Printf("Failed to send guidance to Claude Code: %v", err)
+		http.Error(w, "Failed to send guidance to Claude Code", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Successfully sent guidance to Claude Code session %s (took %v)", sessionID, claudeResponse.Duration)
+
+	// Record the action in task history
+	responseData := map[string]interface{}{
+		"user_agent":     r.Header.Get("User-Agent"),
+		"timestamp":      r.FormValue("timestamp"),
+		"guidance":       guidance,
+		"session_id":     sessionID,
+		"claude_output":  claudeResponse.Output,
+		"claude_success": claudeResponse.Success,
+		"duration":       claudeResponse.Duration.String(),
+	}
+
+	// Take the action to mark task as completed
+	if err := h.taskService.TakeAction(r.Context(), taskID, domain.ActionTypeContinue, responseData); err != nil {
+		log.Printf("Failed to record Stop input action for task %s: %v", taskID, err)
+		http.Error(w, "Failed to record action", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if this task has a pending decision (blocking webhook waiting)
+	if h.taskService.HasPendingDecision(taskID) {
+		// Send decision to waiting webhook handler
+		success := h.taskService.SendDecisionToTask(taskID, domain.ActionTypeContinue)
+		if success {
+			log.Printf("Sent continue decision to blocking webhook for task %s", taskID.String()[:8])
+		} else {
+			log.Printf("Warning: Failed to send decision to blocking webhook for task %s", taskID.String()[:8])
+		}
 	}
 
 	// Redirect back to task detail page

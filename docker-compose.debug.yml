@@ -1,0 +1,25 @@
+services:
+  debug-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: debug
+    container_name: haiper-debug
+    ports:
+      - "10291:8080"  # Map to different port to avoid conflicts
+    environment:
+      - DEBUG_PORT=8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    labels:
+      - "com.docker.compose.project=haiper-debug"
+      - "description=Claude Code webhook debug server"
+
+networks:
+  default:
+    name: haiper-debug-network

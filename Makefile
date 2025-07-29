@@ -1,7 +1,7 @@
 # Claude Control Server Makefile
 # Provides convenient commands for Docker Compose management
 
-.PHONY: help up down restart logs build clean status shell-server shell-db test db-clean-pending db-clean-all-tasks db-status db-recent-tasks db-shell health
+.PHONY: help up down restart logs build clean status shell-server shell-db test db-clean-pending db-clean-all-tasks db-status db-recent-tasks db-shell health debug-on debug-off logs-debug
 
 # Default target
 help:
@@ -39,13 +39,28 @@ help:
 	@echo "  make shell-server - Open shell in server container"
 	@echo "  make test        - Run a test webhook request"
 	@echo "  make health      - Check service health status"
+	@echo ""
+	@echo "Debug commands:"
+	@echo "  make debug-on    - Switch to debug server (saves current Claude config)"
+	@echo "  make debug-off   - Switch back to normal server (restores Claude config)"
+	@echo "  make logs-debug  - View debug server logs"
+
+# Helper functions to get dynamic ports
+get-server-port:
+	@docker compose port claude-control 8080 2>/dev/null | cut -d: -f2 || echo "8080"
+
+get-ntfy-port:
+	@docker compose port ntfy 80 2>/dev/null | cut -d: -f2 || echo "80"
+
+get-debug-port:
+	@docker compose -f docker-compose.debug.yml port debug-server 8080 2>/dev/null | cut -d: -f2 || echo "10291"
 
 # Main commands
 up:
 	docker compose up -d
 	@echo "✅ All services started"
-	@echo "📱 Dashboard: http://localhost:8080/dashboard"
-	@echo "🔗 Webhook: http://localhost:8080/webhook/"
+	@echo "📱 Dashboard: http://localhost:$$(make -s get-server-port)/dashboard"
+	@echo "🔗 Webhook: http://localhost:$$(make -s get-server-port)/webhook/"
 
 down:
 	docker compose down
@@ -99,6 +114,9 @@ logs-db:
 logs-ntfy:
 	docker compose logs -f ntfy
 
+logs-debug:
+	docker compose -f docker-compose.debug.yml logs -f debug-server
+
 # Utility commands
 shell-server:
 	docker compose exec claude-control /bin/sh
@@ -108,7 +126,7 @@ shell-db:
 
 test:
 	@echo "🧪 Testing webhook endpoint..."
-	curl -X POST http://localhost:8080/webhook/pre-tool-use \
+	curl -X POST http://localhost:$$(make -s get-server-port)/webhook/pre-tool-use \
 		-H "Content-Type: application/json" \
 		-d '{"hook_type": "PreToolUse", "tool": "test", "test": true}' \
 		|| echo "❌ Test failed - is the server running?"
@@ -143,5 +161,51 @@ health:
 	@docker compose ps
 	@echo ""
 	@echo "Testing endpoints..."
-	@curl -s http://localhost:8080/health > /dev/null && echo "✅ Server health OK" || echo "❌ Server health failed"
-	@curl -s http://localhost:80/v1/health > /dev/null && echo "✅ NTFY health OK" || echo "❌ NTFY health failed"
+	@curl -s http://localhost:$$(make -s get-server-port)/health > /dev/null && echo "✅ Server health OK" || echo "❌ Server health failed"
+	@curl -s http://localhost:$$(make -s get-ntfy-port)/v1/health > /dev/null && echo "✅ NTFY health OK" || echo "❌ NTFY health failed"
+
+# Debug mode commands
+debug-on:
+	@echo "🐛 Switching to debug mode..."
+	@# Save current Claude config if it exists
+	@if [ -f ./.claude/settings.local.json ]; then \
+		cp ./.claude/settings.local.json ./.claude/settings.local.json.backup; \
+		echo "📋 Backed up existing Claude config to .claude/settings.local.json.backup"; \
+	fi
+	@# Stop normal server if running
+	@docker compose down 2>/dev/null || true
+	@echo "🛑 Stopped normal server"
+	@# Create debug hooks configuration
+	@cp hooks.json ./.claude/settings.local.json
+	@echo "🔧 Created debug hooks configuration in .claude/settings.local.json"
+	@# Start debug server
+	@docker compose -f docker-compose.debug.yml up -d
+	@echo "✅ Debug server started on http://localhost:$$(make -s get-debug-port)"
+	@echo "🐛 Debug endpoints: http://localhost:$$(make -s get-debug-port)/debug/webhook/"
+	@echo "📋 Info page: http://localhost:$$(make -s get-debug-port)/"
+	@echo ""
+	@echo "🚀 Debug mode is now active!"
+	@echo "   All Claude Code hooks will now send requests to the debug server"
+	@echo "   Use 'make debug-off' to return to normal mode"
+
+debug-off:
+	@echo "🔄 Switching back to normal mode..."
+	@# Stop debug server
+	@docker compose -f docker-compose.debug.yml down 2>/dev/null || true
+	@echo "🛑 Stopped debug server"
+	@# Restore original Claude config
+	@if [ -f ./.claude/settings.local.json.backup ]; then \
+		mv ./.claude/settings.local.json.backup ./.claude/settings.local.json; \
+		echo "📋 Restored original Claude config from backup"; \
+	else \
+		rm -f ./.claude/settings.local.json; \
+		echo "📋 Removed debug hooks configuration"; \
+	fi
+	@# Start normal server
+	@docker compose up -d
+	@echo "✅ Normal server started"
+	@echo "📱 Dashboard: http://localhost:$$(make -s get-server-port)/dashboard"
+	@echo "🔗 Webhook: http://localhost:$$(make -s get-server-port)/webhook/"
+	@echo ""
+	@echo "🚀 Normal mode is now active!"
+	@echo "   Claude Code hooks are back to their original configuration"

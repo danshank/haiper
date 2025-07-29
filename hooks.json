@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | curl -s -X POST http://localhost:10291/webhook/post-tool-use -H 'Content-Type: application/json' -d @- --max-time 30"
+            "command": "cat | curl -s -X POST http://localhost:10291/webhook/post-tool-use -H 'Content-Type: application/json' -d @-"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | curl -s -X POST http://localhost:10291/webhook/notification -H 'Content-Type: application/json' -d @- --max-time 300"
+            "command": "cat | curl -s -X POST http://localhost:10291/webhook/notification -H 'Content-Type: application/json' -d @-"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | curl -s -X POST http://localhost:10291/webhook/user-prompt-submit -H 'Content-Type: application/json' -d @- --max-time 300"
+            "command": "cat | curl -s -X POST http://localhost:10291/webhook/user-prompt-submit -H 'Content-Type: application/json' -d @-"
           }
         ]
       }
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | curl -s -X POST http://localhost:10291/webhook/stop -H 'Content-Type: application/json' -d @- --max-time 30"
+            "command": "cat | curl -s -X POST http://localhost:10291/webhook/stop -H 'Content-Type: application/json' -d @-"
           }
         ]
       }
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | curl -s -X POST http://localhost:10291/webhook/subagent-stop -H 'Content-Type: application/json' -d @- --max-time 30"
+            "command": "cat | curl -s -X POST http://localhost:10291/webhook/subagent-stop -H 'Content-Type: application/json' -d @-"
           }
         ]
       }
@@ -72,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat | curl -s -X POST http://localhost:10291/webhook/pre-compact -H 'Content-Type: application/json' -d @- --max-time 30"
+            "command": "cat | curl -s -X POST http://localhost:10291/webhook/pre-compact -H 'Content-Type: application/json' -d @- --max-time 300"
           }
         ]
       }
