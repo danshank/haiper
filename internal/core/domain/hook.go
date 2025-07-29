@@ -55,21 +55,6 @@ func ParseHookType(s string) (HookType, error) {
 	return hookType, nil
 }
 
-// ClaudeCodeWebhookRequest represents the common structure of Claude Code webhook requests
-type ClaudeCodeWebhookRequest struct {
-	HookEventName  string        `json:"hook_event_name"`
-	SessionID      string        `json:"session_id"`
-	CWD            string        `json:"cwd,omitempty"`
-	TranscriptPath string        `json:"transcript_path,omitempty"`
-	ToolName       string        `json:"tool_name,omitempty"`
-	ToolInput      *ToolInput    `json:"tool_input,omitempty"`
-	ToolResponse   *ToolResponse `json:"tool_response,omitempty"`
-	Message        string        `json:"message,omitempty"`
-	UserPrompt     string        `json:"user_prompt,omitempty"`
-	SubagentID     string        `json:"subagent_id,omitempty"`
-	Matcher        string        `json:"matcher,omitempty"`
-}
-
 // ToolInput represents tool input parameters from Claude Code
 type ToolInput struct {
 	Command     string `json:"command,omitempty"`
@@ -144,97 +129,4 @@ type PreCompactHookData struct {
 type HookData struct {
 	Type HookType    `json:"type"`
 	Data interface{} `json:"data"`
-}
-
-// NewHookDataFromRequest creates structured hook data from a webhook request
-func NewHookDataFromRequest(req *ClaudeCodeWebhookRequest) (*HookData, error) {
-	// Parse hook type from request
-	hookType, err := ParseHookType(req.HookEventName)
-	if err != nil {
-		return nil, fmt.Errorf("invalid hook type: %w", err)
-	}
-
-	var structuredData interface{}
-
-	switch hookType {
-	case HookTypePreToolUse:
-		structuredData = &PreToolUseHookData{
-			BaseHookData: BaseHookData{
-				HookEventName:  req.HookEventName,
-				SessionID:      req.SessionID,
-				CWD:            req.CWD,
-				TranscriptPath: req.TranscriptPath,
-			},
-			ToolName:  req.ToolName,
-			ToolInput: req.ToolInput,
-		}
-	case HookTypePostToolUse:
-		structuredData = &PostToolUseHookData{
-			BaseHookData: BaseHookData{
-				HookEventName:  req.HookEventName,
-				SessionID:      req.SessionID,
-				CWD:            req.CWD,
-				TranscriptPath: req.TranscriptPath,
-			},
-			ToolName:     req.ToolName,
-			ToolInput:    req.ToolInput,
-			ToolResponse: req.ToolResponse,
-		}
-	case HookTypeNotification:
-		structuredData = &NotificationHookData{
-			BaseHookData: BaseHookData{
-				HookEventName:  req.HookEventName,
-				SessionID:      req.SessionID,
-				CWD:            req.CWD,
-				TranscriptPath: req.TranscriptPath,
-			},
-			Message: req.Message,
-		}
-	case HookTypeUserPromptSubmit:
-		structuredData = &UserPromptSubmitHookData{
-			BaseHookData: BaseHookData{
-				HookEventName:  req.HookEventName,
-				SessionID:      req.SessionID,
-				CWD:            req.CWD,
-				TranscriptPath: req.TranscriptPath,
-			},
-			UserPrompt: req.UserPrompt,
-		}
-	case HookTypeStop:
-		structuredData = &StopHookData{
-			BaseHookData: BaseHookData{
-				HookEventName:  req.HookEventName,
-				SessionID:      req.SessionID,
-				CWD:            req.CWD,
-				TranscriptPath: req.TranscriptPath,
-			},
-		}
-	case HookTypeSubagentStop:
-		structuredData = &SubagentStopHookData{
-			BaseHookData: BaseHookData{
-				HookEventName:  req.HookEventName,
-				SessionID:      req.SessionID,
-				CWD:            req.CWD,
-				TranscriptPath: req.TranscriptPath,
-			},
-			SubagentID: req.SubagentID,
-		}
-	case HookTypePreCompact:
-		structuredData = &PreCompactHookData{
-			BaseHookData: BaseHookData{
-				HookEventName:  req.HookEventName,
-				SessionID:      req.SessionID,
-				CWD:            req.CWD,
-				TranscriptPath: req.TranscriptPath,
-			},
-			Matcher: req.Matcher,
-		}
-	default:
-		return nil, fmt.Errorf("unsupported hook type: %s", hookType)
-	}
-
-	return &HookData{
-		Type: hookType,
-		Data: structuredData,
-	}, nil
 }
