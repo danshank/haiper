@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -24,48 +23,6 @@ type WebhookHandler struct {
 	stopInput     string // User-configured input for Stop webhooks
 }
 
-// ClaudeCodeWebhookRequest represents the expected structure of Claude Code webhook requests
-type ClaudeCodeWebhookRequest struct {
-	HookEventName   string                 `json:"hook_event_name"`
-	SessionID       string                 `json:"session_id"`
-	CWD             string                 `json:"cwd"`
-	TranscriptPath  string                 `json:"transcript_path,omitempty"`
-	ToolName        string                 `json:"tool_name,omitempty"`
-	ToolInput       *ToolInput             `json:"tool_input,omitempty"`
-	ToolResponse    *ToolResponse          `json:"tool_response,omitempty"`
-	Message         string                 `json:"message,omitempty"`
-	RawData         map[string]interface{} `json:"-"` // Store raw data for flexibility
-}
-
-// ToolInput represents tool input parameters
-type ToolInput struct {
-	Command     string `json:"command,omitempty"`
-	Description string `json:"description,omitempty"`
-}
-
-// ToolResponse represents tool execution results
-type ToolResponse struct {
-	Interrupted bool   `json:"interrupted"`
-	IsImage     bool   `json:"isImage"`
-	Stderr      string `json:"stderr"`
-	Stdout      string `json:"stdout"`
-}
-
-var (
-	// Valid hook event names based on observed patterns
-	validHookTypes = map[string]bool{
-		"PreToolUse":        true,
-		"PostToolUse":       true,
-		"Notification":      true,
-		"UserPromptSubmit":  true,
-		"Stop":              true,
-		"SubagentStop":      true,
-		"PreCompact":        true,
-	}
-
-	// Session ID validation (UUID format)
-	sessionIDRegex = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
-)
 
 // NewWebhookHandler creates a new webhook handler
 func NewWebhookHandler(taskService *services.TaskService) *WebhookHandler {
@@ -105,7 +62,7 @@ func (h *WebhookHandler) RegisterRoutes(router *mux.Router) {
 }
 
 // parseAndValidateRequest parses and validates the incoming webhook request
-func (h *WebhookHandler) parseAndValidateRequest(r *http.Request) (*ClaudeCodeWebhookRequest, error) {
+func (h *WebhookHandler) parseAndValidateRequest(r *http.Request) (*domain.ClaudeCodeWebhookRequest, error) {
 	// Validate content type
 	contentType := r.Header.Get("Content-Type")
 	if contentType != "" && !strings.Contains(contentType, "application/json") {
@@ -119,147 +76,18 @@ func (h *WebhookHandler) parseAndValidateRequest(r *http.Request) (*ClaudeCodeWe
 	}
 
 	if len(bodyBytes) == 0 {
-		return &ClaudeCodeWebhookRequest{}, nil // Allow empty bodies
-	}
-
-	// Parse JSON into raw data first
-	var rawData map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &rawData); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %w", err)
+		return &domain.ClaudeCodeWebhookRequest{}, nil // Allow empty bodies
 	}
 
 	// Parse into structured format
-	var req ClaudeCodeWebhookRequest
+	var req domain.ClaudeCodeWebhookRequest
 	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		return nil, fmt.Errorf("failed to parse webhook structure: %w", err)
-	}
-
-	req.RawData = rawData
-
-	// Validate the request
-	if err := h.validateRequest(&req); err != nil {
-		return nil, err
 	}
 
 	return &req, nil
 }
 
-// validateRequest performs validation on the parsed request
-func (h *WebhookHandler) validateRequest(req *ClaudeCodeWebhookRequest) error {
-	// Validate hook event name if present
-	if req.HookEventName != "" && !validHookTypes[req.HookEventName] {
-		log.Printf("⚠️  Unknown hook type: %s", req.HookEventName)
-	}
-
-	// Validate session ID format if present
-	if req.SessionID != "" && !sessionIDRegex.MatchString(req.SessionID) {
-		log.Printf("⚠️  Invalid session ID format: %s", req.SessionID)
-	}
-
-	// Validate paths if present
-	if req.CWD != "" && !h.isValidPath(req.CWD) {
-		log.Printf("⚠️  Potentially unsafe CWD path: %s", req.CWD)
-	}
-
-	if req.TranscriptPath != "" && !h.isValidPath(req.TranscriptPath) {
-		log.Printf("⚠️  Potentially unsafe transcript path: %s", req.TranscriptPath)
-	}
-
-	// Validate command length if present
-	if req.ToolInput != nil && req.ToolInput.Command != "" {
-		if len(req.ToolInput.Command) > 5000 {
-			return fmt.Errorf("command too long: %d characters (max 5000)", len(req.ToolInput.Command))
-		}
-		
-		// Log suspicious commands
-		if h.isSuspiciousCommand(req.ToolInput.Command) {
-			log.Printf("⚠️  Suspicious command detected: %s", req.ToolInput.Command)
-		}
-	}
-
-	return nil
-}
-
-// isValidPath performs basic path validation
-func (h *WebhookHandler) isValidPath(path string) bool {
-	// Allow empty paths
-	if path == "" {
-		return true
-	}
-
-	// Basic length check
-	if len(path) > 500 {
-		return false
-	}
-
-	// Check for null bytes and other dangerous characters
-	if strings.ContainsAny(path, "\x00\r\n") {
-		return false
-	}
-
-	return true
-}
-
-// isSuspiciousCommand checks for potentially dangerous command patterns
-func (h *WebhookHandler) isSuspiciousCommand(command string) bool {
-	suspiciousPatterns := []string{
-		"rm -rf /",
-		"format c:",
-		"del /f /s /q",
-		"DROP TABLE",
-		"<script",
-		"javascript:",
-		"eval(",
-		"system(",
-		"exec(",
-	}
-
-	lowerCommand := strings.ToLower(command)
-	for _, pattern := range suspiciousPatterns {
-		if strings.Contains(lowerCommand, strings.ToLower(pattern)) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// convertToLegacyPayload converts validated request to legacy map format for domain layer
-func (h *WebhookHandler) convertToLegacyPayload(req *ClaudeCodeWebhookRequest) map[string]interface{} {
-	if req.RawData != nil {
-		return req.RawData
-	}
-	
-	// Fallback: construct from structured data
-	payload := make(map[string]interface{})
-	
-	if req.HookEventName != "" {
-		payload["hook_event_name"] = req.HookEventName
-	}
-	if req.SessionID != "" {
-		payload["session_id"] = req.SessionID
-	}
-	if req.CWD != "" {
-		payload["cwd"] = req.CWD
-	}
-	if req.TranscriptPath != "" {
-		payload["transcript_path"] = req.TranscriptPath
-	}
-	if req.ToolName != "" {
-		payload["tool_name"] = req.ToolName
-	}
-	if req.ToolInput != nil {
-		payload["tool_input"] = req.ToolInput
-	}
-	if req.ToolResponse != nil {
-		payload["tool_response"] = req.ToolResponse
-	}
-	if req.Message != "" {
-		payload["message"] = req.Message
-	}
-	
-	return payload
-}
 
 // handlePostToolUse handles PostToolUse webhook events
 func (h *WebhookHandler) handlePostToolUse(w http.ResponseWriter, r *http.Request) {
@@ -268,7 +96,25 @@ func (h *WebhookHandler) handlePostToolUse(w http.ResponseWriter, r *http.Reques
 
 // handleStop handles Stop webhook events with immediate response and task creation
 func (h *WebhookHandler) handleStop(w http.ResponseWriter, r *http.Request) {
-	// Parse and validate the incoming webhook request
+	// Validate content type
+	contentType := r.Header.Get("Content-Type")
+	if contentType != "" && !strings.Contains(contentType, "application/json") {
+		log.Printf("⚠️  Unexpected content type: %s", contentType)
+	}
+
+	// Read the request body directly
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read request body: %w", err)
+	}
+
+	// Parse into structured format
+	var req domain.StopHookData
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		return nil, fmt.Errorf("failed to parse webhook structure: %w", err)
+	}
+
+	/*
 	validatedReq, err := h.parseAndValidateRequest(r)
 	if err != nil {
 		log.Printf("Validation failed for Stop webhook: %v", err)
@@ -277,15 +123,17 @@ func (h *WebhookHandler) handleStop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Convert validated request to structured hook data
-	payload := h.convertToLegacyPayload(validatedReq)
+	payload := validatedReq.ConvertToLegacyPayload()
 	hookData := domain.NewHookData(domain.HookTypeStop, payload)
+	*/
 
 	// Log received Claude Code data for debugging
 	log.Printf("Received Stop webhook: session_id=%s, cwd=%s", 
-		hookData.GetSessionID(), validatedReq.CWD)
+		req.SessionID, req.CWD)
 
 	// Create task for logging/monitoring (non-blocking)
 	if h.taskService != nil {
+		hookData := domain.NewHookData(domain.HookTypeStop, &req)
 		task := domain.NewTask(hookData)
 		if err := h.taskService.CreateTask(r.Context(), task); err != nil {
 			log.Printf("Failed to create Stop task: %v", err)
@@ -342,7 +190,7 @@ func (h *WebhookHandler) handleNonBlockingWebhook(w http.ResponseWriter, r *http
 	}
 
 	// Convert validated request to structured hook data
-	payload := h.convertToLegacyPayload(validatedReq)
+	payload := validatedReq.ConvertToLegacyPayload()
 
 	// Extract hook type from Claude Code JSON (prefer hook_event_name over our URL-based hookType)
 	if claudeHookType, ok := payload["hook_event_name"]; ok {
@@ -414,7 +262,7 @@ func (h *WebhookHandler) handleNotification(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Convert validated request to structured hook data
-	payload := h.convertToLegacyPayload(validatedReq)
+	payload := validatedReq.ConvertToLegacyPayload()
 	hookData := domain.NewHookData(domain.HookTypeNotification, payload)
 
 	// Log received Claude Code data for debugging
@@ -459,7 +307,7 @@ func (h *WebhookHandler) handleBlockingWebhook(w http.ResponseWriter, r *http.Re
 	}
 
 	// Convert validated request back to legacy payload format for domain layer
-	payload := h.convertToLegacyPayload(validatedReq)
+	payload := validatedReq.ConvertToLegacyPayload()
 
 	// Extract hook type from Claude Code JSON (prefer hook_event_name over our URL-based hookType)
 	if claudeHookType, ok := payload["hook_event_name"]; ok {

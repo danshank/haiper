@@ -78,10 +78,10 @@ type ToolInput struct {
 
 // ToolResponse represents tool execution results from Claude Code
 type ToolResponse struct {
-	Interrupted bool   `json:"interrupted"`
-	IsImage     bool   `json:"isImage"`
-	Stderr      string `json:"stderr"`
-	Stdout      string `json:"stdout"`
+	Interrupted bool   `json:"interrupted,omitempty"`
+	Stderr      string `json:"stderr,omitempty"`
+	Stdout      string `json:"stdout,omitempty"`
+	Success     bool   `json:"success,omitempty"`
 }
 
 // BaseHookData contains common fields present in all Claude Code webhooks
@@ -122,19 +122,22 @@ type UserPromptSubmitHookData struct {
 // StopHookData represents data from Stop webhooks
 type StopHookData struct {
 	BaseHookData
+	StopHookActive bool `json:"stop_hook_active"`
 	// Stop webhooks typically contain minimal data, mainly session information
 }
 
 // SubagentStopHookData represents data from SubagentStop webhooks
 type SubagentStopHookData struct {
 	BaseHookData
+	StopHookActive bool `json:"stop_hook_active"`
 	SubagentID string `json:"subagent_id,omitempty"`
 }
 
 // PreCompactHookData represents data from PreCompact webhooks
 type PreCompactHookData struct {
 	BaseHookData
-	Matcher string `json:"matcher,omitempty"` // "manual" or "auto"
+	Trigger string `json:"trigger,omitempty"` // "manual" or "auto"
+	CustomInstructions string `json:"custom_instructions,omitempty"`
 }
 
 // HookData represents the unified hook data structure
