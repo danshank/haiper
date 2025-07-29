@@ -89,18 +89,6 @@ func (n *NotificationSender) Send(ctx context.Context, notification *domain.Noti
 	return nil
 }
 
-// SendBatch sends multiple notifications in a single operation
-func (n *NotificationSender) SendBatch(ctx context.Context, notifications []*domain.Notification) error {
-	// NTFY doesn't have native batch support, so we'll send them sequentially
-	// In a production system, you might want to send them concurrently with goroutines
-	for _, notification := range notifications {
-		if err := n.Send(ctx, notification); err != nil {
-			return fmt.Errorf("failed to send notification %s: %w", notification.ID, err)
-		}
-	}
-	return nil
-}
-
 // Verify checks if the notification service is available and configured correctly
 func (n *NotificationSender) Verify(ctx context.Context) error {
 	// Create a simple health check request

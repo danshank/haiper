@@ -27,33 +27,6 @@ type TaskServiceConfig struct {
 	AutoNotifyHookTypes []domain.HookType `json:"auto_notify_hook_types"`
 }
 
-// NewTaskService creates a new task service with dependencies
-func NewTaskService(
-	taskRepo ports.TaskRepository,
-	historyRepo ports.TaskHistoryRepository,
-	notificationSvc ports.NotificationSender,
-	responseBuilder ports.HookResponseBuilder,
-	config *TaskServiceConfig,
-) *TaskService {
-	if config.AutoNotifyHookTypes == nil {
-		// Default hook types that should trigger notifications
-		config.AutoNotifyHookTypes = []domain.HookType{
-			domain.HookTypePreToolUse,
-			domain.HookTypeNotification,
-			domain.HookTypeUserPromptSubmit,
-		}
-	}
-
-	return &TaskService{
-		taskRepo:        taskRepo,
-		historyRepo:     historyRepo,
-		notificationSvc: notificationSvc,
-		responseBuilder: responseBuilder,
-		decisionManager: NewTaskDecisionManager(),
-		config:          config,
-	}
-}
-
 // CreateTask creates a new task with structured hook data
 func (s *TaskService) CreateTask(ctx context.Context, task *domain.Task) error {
 	// Store task
