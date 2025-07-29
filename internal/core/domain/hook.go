@@ -12,23 +12,23 @@ type HookType string
 const (
 	// HookTypePreToolUse runs after Claude creates tool parameters and before processing the tool call
 	HookTypePreToolUse HookType = "PreToolUse"
-	
+
 	// HookTypePostToolUse runs immediately after a tool completes successfully
 	HookTypePostToolUse HookType = "PostToolUse"
-	
+
 	// HookTypeNotification runs when Claude Code sends notifications
 	// (when Claude needs permission to use a tool or prompt idle for 60+ seconds)
 	HookTypeNotification HookType = "Notification"
-	
+
 	// HookTypeUserPromptSubmit runs when the user submits a prompt, before Claude processes it
 	HookTypeUserPromptSubmit HookType = "UserPromptSubmit"
-	
+
 	// HookTypeStop runs when the main Claude Code agent has finished responding
 	HookTypeStop HookType = "Stop"
-	
+
 	// HookTypeSubagentStop runs when a Claude Code subagent (Task tool call) has finished responding
 	HookTypeSubagentStop HookType = "SubagentStop"
-	
+
 	// HookTypePreCompact runs before Claude Code runs a compact operation
 	HookTypePreCompact HookType = "PreCompact"
 )
@@ -39,8 +39,8 @@ func (h HookType) String() string {
 
 func (h HookType) IsValid() bool {
 	switch h {
-	case HookTypePreToolUse, HookTypePostToolUse, HookTypeNotification, 
-		 HookTypeUserPromptSubmit, HookTypeStop, HookTypeSubagentStop, HookTypePreCompact:
+	case HookTypePreToolUse, HookTypePostToolUse, HookTypeNotification,
+		HookTypeUserPromptSubmit, HookTypeStop, HookTypeSubagentStop, HookTypePreCompact:
 		return true
 	default:
 		return false
@@ -57,17 +57,17 @@ func ParseHookType(s string) (HookType, error) {
 
 // ClaudeCodeWebhookRequest represents the common structure of Claude Code webhook requests
 type ClaudeCodeWebhookRequest struct {
-	HookEventName  string                 `json:"hook_event_name"`
-	SessionID      string                 `json:"session_id"`
-	CWD            string                 `json:"cwd,omitempty"`
-	TranscriptPath string                 `json:"transcript_path,omitempty"`
-	ToolName       string                 `json:"tool_name,omitempty"`
-	ToolInput      *ToolInput             `json:"tool_input,omitempty"`
-	ToolResponse   *ToolResponse          `json:"tool_response,omitempty"`
-	Message        string                 `json:"message,omitempty"`
-	UserPrompt     string                 `json:"user_prompt,omitempty"`
-	SubagentID     string                 `json:"subagent_id,omitempty"`
-	Matcher        string                 `json:"matcher,omitempty"`
+	HookEventName  string        `json:"hook_event_name"`
+	SessionID      string        `json:"session_id"`
+	CWD            string        `json:"cwd,omitempty"`
+	TranscriptPath string        `json:"transcript_path,omitempty"`
+	ToolName       string        `json:"tool_name,omitempty"`
+	ToolInput      *ToolInput    `json:"tool_input,omitempty"`
+	ToolResponse   *ToolResponse `json:"tool_response,omitempty"`
+	Message        string        `json:"message,omitempty"`
+	UserPrompt     string        `json:"user_prompt,omitempty"`
+	SubagentID     string        `json:"subagent_id,omitempty"`
+	Matcher        string        `json:"matcher,omitempty"`
 }
 
 // ToolInput represents tool input parameters from Claude Code
@@ -129,14 +129,14 @@ type StopHookData struct {
 // SubagentStopHookData represents data from SubagentStop webhooks
 type SubagentStopHookData struct {
 	BaseHookData
-	StopHookActive bool `json:"stop_hook_active"`
-	SubagentID string `json:"subagent_id,omitempty"`
+	StopHookActive bool   `json:"stop_hook_active"`
+	SubagentID     string `json:"subagent_id,omitempty"`
 }
 
 // PreCompactHookData represents data from PreCompact webhooks
 type PreCompactHookData struct {
 	BaseHookData
-	Trigger string `json:"trigger,omitempty"` // "manual" or "auto"
+	Trigger            string `json:"trigger,omitempty"` // "manual" or "auto"
 	CustomInstructions string `json:"custom_instructions,omitempty"`
 }
 
@@ -155,7 +155,7 @@ func NewHookDataFromRequest(req *ClaudeCodeWebhookRequest) (*HookData, error) {
 	}
 
 	var structuredData interface{}
-	
+
 	switch hookType {
 	case HookTypePreToolUse:
 		structuredData = &PreToolUseHookData{
@@ -232,249 +232,9 @@ func NewHookDataFromRequest(req *ClaudeCodeWebhookRequest) (*HookData, error) {
 	default:
 		return nil, fmt.Errorf("unsupported hook type: %s", hookType)
 	}
-	
+
 	return &HookData{
 		Type: hookType,
 		Data: structuredData,
 	}, nil
-}
-
-// NewHookData creates structured hook data based on the hook type (kept for backward compatibility)
-func NewHookData(hookType HookType, rawPayload map[string]interface{}) *HookData {
-	var structuredData interface{}
-	
-	switch hookType {
-	case HookTypePreToolUse:
-		data := &PreToolUseHookData{}
-		populateFromMap(rawPayload, data)
-		structuredData = data
-	case HookTypePostToolUse:
-		data := &PostToolUseHookData{}
-		populateFromMap(rawPayload, data)
-		structuredData = data
-	case HookTypeNotification:
-		data := &NotificationHookData{}
-		populateFromMap(rawPayload, data)
-		structuredData = data
-	case HookTypeUserPromptSubmit:
-		data := &UserPromptSubmitHookData{}
-		populateFromMap(rawPayload, data)
-		structuredData = data
-	case HookTypeStop:
-		data := &StopHookData{}
-		populateFromMap(rawPayload, data)
-		structuredData = data
-	case HookTypeSubagentStop:
-		data := &SubagentStopHookData{}
-		populateFromMap(rawPayload, data)
-		structuredData = data
-	case HookTypePreCompact:
-		data := &PreCompactHookData{}
-		populateFromMap(rawPayload, data)
-		structuredData = data
-	default:
-		// Fallback to generic payload for unknown hook types
-		structuredData = rawPayload
-	}
-	
-	return &HookData{
-		Type: hookType,
-		Data: structuredData,
-	}
-}
-
-// GetSessionID extracts the session ID from any hook data type
-func (h *HookData) GetSessionID() string {
-	switch data := h.Data.(type) {
-	case *PreToolUseHookData:
-		return data.SessionID
-	case *PostToolUseHookData:
-		return data.SessionID
-	case *NotificationHookData:
-		return data.SessionID
-	case *UserPromptSubmitHookData:
-		return data.SessionID
-	case *StopHookData:
-		return data.SessionID
-	case *SubagentStopHookData:
-		return data.SessionID
-	case *PreCompactHookData:
-		return data.SessionID
-	default:
-		// Try to extract from map for fallback cases
-		if payload, ok := data.(map[string]interface{}); ok {
-			if sessionID, exists := payload["session_id"]; exists {
-				if sessionIDStr, ok := sessionID.(string); ok {
-					return sessionIDStr
-				}
-			}
-		}
-		return ""
-	}
-}
-
-// GetToolName extracts the tool name from hook data (for tool-related hooks)
-func (h *HookData) GetToolName() string {
-	switch data := h.Data.(type) {
-	case *PreToolUseHookData:
-		return data.ToolName
-	case *PostToolUseHookData:
-		return data.ToolName
-	default:
-		return ""
-	}
-}
-
-// populateFromMap populates a struct from a map using reflection-like field matching
-func populateFromMap(source map[string]interface{}, target interface{}) {
-	// This is a simplified version - in production, you'd use reflection or a library like mapstructure
-	// For now, we'll implement the specific cases we need
-	
-	switch t := target.(type) {
-	case *PreToolUseHookData:
-		if v, ok := source["hook_event_name"].(string); ok {
-			t.HookEventName = v
-		}
-		if v, ok := source["session_id"].(string); ok {
-			t.SessionID = v
-		}
-		if v, ok := source["cwd"].(string); ok {
-			t.CWD = v
-		}
-		if v, ok := source["transcript_path"].(string); ok {
-			t.TranscriptPath = v
-		}
-		if v, ok := source["tool_name"].(string); ok {
-			t.ToolName = v
-		}
-		if toolInput, ok := source["tool_input"].(map[string]interface{}); ok {
-			ti := &ToolInput{}
-			if cmd, ok := toolInput["command"].(string); ok {
-				ti.Command = cmd
-			}
-			if desc, ok := toolInput["description"].(string); ok {
-				ti.Description = desc
-			}
-			t.ToolInput = ti
-		}
-	case *PostToolUseHookData:
-		if v, ok := source["hook_event_name"].(string); ok {
-			t.HookEventName = v
-		}
-		if v, ok := source["session_id"].(string); ok {
-			t.SessionID = v
-		}
-		if v, ok := source["cwd"].(string); ok {
-			t.CWD = v
-		}
-		if v, ok := source["transcript_path"].(string); ok {
-			t.TranscriptPath = v
-		}
-		if v, ok := source["tool_name"].(string); ok {
-			t.ToolName = v
-		}
-		if toolInput, ok := source["tool_input"].(map[string]interface{}); ok {
-			ti := &ToolInput{}
-			if cmd, ok := toolInput["command"].(string); ok {
-				ti.Command = cmd
-			}
-			if desc, ok := toolInput["description"].(string); ok {
-				ti.Description = desc
-			}
-			t.ToolInput = ti
-		}
-		if toolResponse, ok := source["tool_response"].(map[string]interface{}); ok {
-			tr := &ToolResponse{}
-			if interrupted, ok := toolResponse["interrupted"].(bool); ok {
-				tr.Interrupted = interrupted
-			}
-			if isImage, ok := toolResponse["isImage"].(bool); ok {
-				tr.IsImage = isImage
-			}
-			if stderr, ok := toolResponse["stderr"].(string); ok {
-				tr.Stderr = stderr
-			}
-			if stdout, ok := toolResponse["stdout"].(string); ok {
-				tr.Stdout = stdout
-			}
-			t.ToolResponse = tr
-		}
-	case *NotificationHookData:
-		if v, ok := source["hook_event_name"].(string); ok {
-			t.HookEventName = v
-		}
-		if v, ok := source["session_id"].(string); ok {
-			t.SessionID = v
-		}
-		if v, ok := source["cwd"].(string); ok {
-			t.CWD = v
-		}
-		if v, ok := source["transcript_path"].(string); ok {
-			t.TranscriptPath = v
-		}
-		if v, ok := source["message"].(string); ok {
-			t.Message = v
-		}
-	case *UserPromptSubmitHookData:
-		if v, ok := source["hook_event_name"].(string); ok {
-			t.HookEventName = v
-		}
-		if v, ok := source["session_id"].(string); ok {
-			t.SessionID = v
-		}
-		if v, ok := source["cwd"].(string); ok {
-			t.CWD = v
-		}
-		if v, ok := source["transcript_path"].(string); ok {
-			t.TranscriptPath = v
-		}
-		if v, ok := source["user_prompt"].(string); ok {
-			t.UserPrompt = v
-		}
-	case *StopHookData:
-		if v, ok := source["hook_event_name"].(string); ok {
-			t.HookEventName = v
-		}
-		if v, ok := source["session_id"].(string); ok {
-			t.SessionID = v
-		}
-		if v, ok := source["cwd"].(string); ok {
-			t.CWD = v
-		}
-		if v, ok := source["transcript_path"].(string); ok {
-			t.TranscriptPath = v
-		}
-	case *SubagentStopHookData:
-		if v, ok := source["hook_event_name"].(string); ok {
-			t.HookEventName = v
-		}
-		if v, ok := source["session_id"].(string); ok {
-			t.SessionID = v
-		}
-		if v, ok := source["cwd"].(string); ok {
-			t.CWD = v
-		}
-		if v, ok := source["transcript_path"].(string); ok {
-			t.TranscriptPath = v
-		}
-		if v, ok := source["subagent_id"].(string); ok {
-			t.SubagentID = v
-		}
-	case *PreCompactHookData:
-		if v, ok := source["hook_event_name"].(string); ok {
-			t.HookEventName = v
-		}
-		if v, ok := source["session_id"].(string); ok {
-			t.SessionID = v
-		}
-		if v, ok := source["cwd"].(string); ok {
-			t.CWD = v
-		}
-		if v, ok := source["transcript_path"].(string); ok {
-			t.TranscriptPath = v
-		}
-		if v, ok := source["matcher"].(string); ok {
-			t.Matcher = v
-		}
-	}
 }
